@@ -448,25 +448,48 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
             except Exception as exc:
                 logger.warning("Error trying alternative 2FA: %s", exc)
 
-            # No TOTP option found → raise error
+            # No TOTP option found → raise error with detailed guidance
             page_text = driver.page_source.lower()
-            if "security key" in page_text or "usb" in page_text:
-                challenge_type = "security key"
+            if "security key" in page_text or "usb" in page_text or "/challenge/sk" in current_url:
+                challenge_type = "security key / passkey"
+                guidance = (
+                    "Your account uses a hardware security key (passkey) as 2FA. "
+                    "The bot cannot use hardware keys.\n\n"
+                    "✅ Solution: Create an App Password at "
+                    "https://myaccount.google.com/apppasswords "
+                    "and use it instead of your Gmail password in /login."
+                )
             elif "phone" in page_text or "sms" in page_text:
                 challenge_type = "SMS / phone verification"
+                guidance = (
+                    "Your account uses SMS as 2FA. "
+                    "✅ Solution: Create an App Password at "
+                    "https://myaccount.google.com/apppasswords "
+                    "and use it instead of your Gmail password in /login."
+                )
             elif "tap yes" in page_text or "google prompt" in page_text:
                 challenge_type = "Google prompt (tap Yes on your phone)"
+                guidance = (
+                    "Your account uses Google prompt 2FA. "
+                    "✅ Solution: Create an App Password at "
+                    "https://myaccount.google.com/apppasswords "
+                    "and use it instead of your Gmail password in /login."
+                )
             else:
                 challenge_type = "two-step verification"
+                guidance = (
+                    "✅ Solution: Create an App Password at "
+                    "https://myaccount.google.com/apppasswords "
+                    "and use it instead of your Gmail password in /login."
+                )
 
             logger.warning(
                 "Unsupported 2FA for %s: %s (URL: %s)",
                 email, challenge_type, current_url,
             )
             raise GoogleAutomationError(
-                f"Your account requires {challenge_type}. "
-                f"No authenticator option found. "
-                f"Please use an App Password instead."
+                f"2FA required: {challenge_type}\n\n{guidance}",
+                code="unsupported_2fa",
             )
 
         # ── Verify login ──────────────────────────────────────────────────────
