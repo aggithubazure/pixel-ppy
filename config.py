@@ -86,9 +86,9 @@ OFFER_DOMAIN_WHITELIST = [
 ]
 
 # ── Selenium / WebDriver ──────────────────────────────────────────────────────
-WEBDRIVER_TIMEOUT = 30          # seconds – explicit wait
+WEBDRIVER_TIMEOUT = 60          # seconds – explicit wait (increased for Google v3 sign-in)
 IMPLICIT_WAIT = 10              # seconds
-PAGE_LOAD_TIMEOUT = 60          # seconds
+PAGE_LOAD_TIMEOUT = 90          # seconds
 HEADLESS = True                 # set to False for local debugging with visible browser
 
 # ── Email validation ──────────────────────────────────────────────────────────

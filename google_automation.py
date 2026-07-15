@@ -95,7 +95,9 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options = Options()
 
     if config.HEADLESS:
-        options.add_argument("--headless")
+        # Use new headless mode (Chrome 112+); old --headless breaks JS rendering
+        # on Google Sign-in v3 and causes timeout on input[type="email"].
+        options.add_argument("--headless=new")
 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -106,9 +108,10 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument(f"--window-size={SPECS['width']},{SPECS['height']}")
     options.add_argument(f"--user-agent={profile.user_agent}")
 
-    # ── Memory-saving flags for low-memory environments ─────────────────────
+    # ── Stability flags ──────────────────────────────────────────────────────
+    # NOTE: --disable-features=VizDisplayCompositor removed — breaks rendering
+    # in new headless mode and can prevent Google sign-in form from appearing.
     options.add_argument("--disable-software-rasterizer")
-    options.add_argument("--disable-features=VizDisplayCompositor")
     options.add_argument("--disable-crash-reporter")
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-default-apps")
@@ -117,6 +120,9 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--renderer-process-limit=2")
     options.add_argument("--js-flags=--max-old-space-size=512")
     options.add_argument("--disable-ipc-flooding-protection")
+    # Allow JS to fully settle after navigation (important for Google v3 login)
+    options.add_argument("--enable-javascript")
+    options.add_argument("--allow-running-insecure-content")
 
     # ── Locate Chrome/Chromium and chromedriver ───────────────────────────
     chrome_bin, chromedriver_path = _ensure_chromium_installed()
