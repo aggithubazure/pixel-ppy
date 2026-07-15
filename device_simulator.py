@@ -71,49 +71,119 @@ def _random_chrome_patch() -> str:
     return actual
 
 
-def _random_build_id() -> str:
-    """Pick a realistic BUILD_ID from a pool of known Pixel 10 Pro builds."""
-    builds = [
-        "AP4A.250405.002",
-        "AP4A.250305.001",
-        "AP4A.250205.004",
-        "AP3A.250105.002",
-        "AP3A.241205.015",
-    ]
-    return random.choice(builds)
-
-
-# ── Pixel 10 Pro hardware constants ──────────────────────────────────────────
-# These match the actual Pixel 10 Pro specs
+# ── Pixel hardware constants (per preset) ────────────────────────────────────
+# Screen / GPU / memory characteristics for each supported Pixel model.  These
+# match the real devices so mobile emulation and WebGL/Client-Hints spoofing are
+# internally consistent for whichever preset a session rotates onto.
 
 PIXEL_10_PRO_SPECS = {
-    # Screen
-    "width": 412,            # CSS viewport width
-    "height": 915,           # CSS viewport height
-    "device_width": 1080,    # Physical resolution width
-    "device_height": 2400,   # Physical resolution height
-    "pixel_ratio": 2.625,    # Device pixel ratio
-
-    # GPU (Tensor G5)
-    "webgl_vendor": "Qualcomm",
-    "webgl_renderer": "Adreno (TM) 750",
-
-    # Platform
-    "platform": "Linux armv8l",
-    "vendor": "Google Inc.",
-
-    # Connection
-    "connection_type": "4g",
-    "effective_type": "4g",
-    "downlink": 10,
-
-    # Touch
-    "max_touch_points": 5,
-
-    # Memory (GB exposed to JS)
-    "device_memory": 12,
-    "hardware_concurrency": 8,
+    "width": 412, "height": 915,
+    "device_width": 1080, "device_height": 2400, "pixel_ratio": 2.625,
+    "color_depth": 24,
+    "webgl_vendor": "Qualcomm", "webgl_renderer": "Adreno (TM) 750",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 120,
+    "max_touch_points": 5, "device_memory": 12, "hardware_concurrency": 8,
 }
+
+PIXEL_10_PRO_XL_SPECS = {
+    "width": 412, "height": 919,
+    "device_width": 1344, "device_height": 2992, "pixel_ratio": 3.0,
+    "color_depth": 24,
+    "webgl_vendor": "Qualcomm", "webgl_renderer": "Adreno (TM) 750",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 115,
+    "max_touch_points": 5, "device_memory": 16, "hardware_concurrency": 8,
+}
+
+PIXEL_10_PRO_FOLD_SPECS = {
+    "width": 360, "height": 808,
+    "device_width": 1080, "device_height": 2424, "pixel_ratio": 3.0,
+    "color_depth": 24,
+    "webgl_vendor": "Qualcomm", "webgl_renderer": "Adreno (TM) 750",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 115,
+    "max_touch_points": 5, "device_memory": 16, "hardware_concurrency": 8,
+}
+
+PIXEL_9_PRO_SPECS = {
+    "width": 412, "height": 919,
+    "device_width": 1280, "device_height": 2856, "pixel_ratio": 3.0,
+    "color_depth": 24,
+    "webgl_vendor": "ARM", "webgl_renderer": "Mali-G715-Immortalis MP7",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 115,
+    "max_touch_points": 5, "device_memory": 16, "hardware_concurrency": 8,
+}
+
+PIXEL_9_PRO_XL_SPECS = {
+    "width": 412, "height": 919,
+    "device_width": 1344, "device_height": 2992, "pixel_ratio": 3.0,
+    "color_depth": 24,
+    "webgl_vendor": "ARM", "webgl_renderer": "Mali-G715-Immortalis MP7",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 115,
+    "max_touch_points": 5, "device_memory": 16, "hardware_concurrency": 8,
+}
+
+PIXEL_9_PRO_FOLD_SPECS = {
+    "width": 360, "height": 808,
+    "device_width": 1080, "device_height": 2424, "pixel_ratio": 3.0,
+    "color_depth": 24,
+    "webgl_vendor": "ARM", "webgl_renderer": "Mali-G715-Immortalis MP7",
+    "platform": "Linux armv8l", "vendor": "Google Inc.",
+    "connection_type": "4g", "effective_type": "4g", "downlink": 10, "rtt": 115,
+    "max_touch_points": 5, "device_memory": 16, "hardware_concurrency": 8,
+}
+
+DEVICE_SPECS_BY_PROFILE: dict[str, dict] = {
+    "pixel_10_pro": PIXEL_10_PRO_SPECS,
+    "pixel_10_pro_xl": PIXEL_10_PRO_XL_SPECS,
+    "pixel_10_pro_fold": PIXEL_10_PRO_FOLD_SPECS,
+    "pixel_9_pro": PIXEL_9_PRO_SPECS,
+    "pixel_9_pro_xl": PIXEL_9_PRO_XL_SPECS,
+    "pixel_9_pro_fold": PIXEL_9_PRO_FOLD_SPECS,
+}
+
+# Per-model BUILD_ID pools (realistic stock builds; distinct per model so the
+# fingerprint stays consistent with the chosen device).
+DEVICE_BUILDS_BY_PROFILE: dict[str, list[str]] = {
+    "pixel_10_pro": [
+        "AP4A.250405.002", "AP4A.250305.001", "AP4A.250205.004",
+        "AP3A.250105.002", "AP3A.241205.015",
+    ],
+    "pixel_10_pro_xl": [
+        "AP4A.250405.003", "AP4A.250305.002", "AP4A.250205.005",
+        "AP3A.250105.003", "AP3A.241205.016",
+    ],
+    "pixel_10_pro_fold": [
+        "AP4A.250405.004", "AP4A.250305.003", "AP4A.250205.006",
+        "AP3A.250105.004", "AP3A.241205.017",
+    ],
+    "pixel_9_pro": [
+        "AP4A.250405.005", "AP4A.250305.004", "AP4A.250205.007",
+        "AP3A.250105.005", "AP3A.241205.018",
+    ],
+    "pixel_9_pro_xl": [
+        "AP4A.250405.006", "AP4A.250305.005", "AP4A.250205.008",
+        "AP3A.250105.006", "AP3A.241205.019",
+    ],
+    "pixel_9_pro_fold": [
+        "AP4A.250405.007", "AP4A.250305.006", "AP4A.250205.009",
+        "AP3A.250105.007", "AP3A.241205.020",
+    ],
+}
+
+# Ordered list of every supported preset – used by the retry rotation.
+ALL_DEVICE_PROFILES: list[str] = list(config.DEVICE_PRESETS.keys())
+
+
+def _random_build_id(profile_name: str) -> str:
+    """Pick a realistic BUILD_ID from the pool for *profile_name*."""
+    builds = DEVICE_BUILDS_BY_PROFILE.get(
+        profile_name, DEVICE_BUILDS_BY_PROFILE["pixel_10_pro"]
+    )
+    return random.choice(builds)
 
 
 # ── Device profile dataclass ──────────────────────────────────────────────────
@@ -127,13 +197,15 @@ class DeviceProfile:
     chrome_version: str
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
-    # Fixed Pixel 10 Pro hardware identity
+    # Hardware identity for the selected Pixel preset
+    profile_name: str = config.DEFAULT_DEVICE_PROFILE
     model: str = config.DEVICE_MODEL
     brand: str = config.DEVICE_BRAND
     manufacturer: str = config.DEVICE_MANUFACTURER
     android_version: str = config.ANDROID_VERSION
     android_sdk: str = config.ANDROID_SDK
     build_id: str = config.BUILD_ID
+    specs: dict = field(default_factory=lambda: PIXEL_10_PRO_SPECS)
 
     # Accept-Language for US English (most Pixel offers are US)
     accept_language: str = "en-US,en;q=0.9"
@@ -180,7 +252,7 @@ class DeviceProfile:
 
     def navigator_overrides_js(self) -> str:
         """Return JavaScript to inject navigator/screen spoofs via CDP."""
-        specs = PIXEL_10_PRO_SPECS
+        specs = self.specs
         return f"""
         // ── navigator overrides ──
         Object.defineProperty(navigator, 'platform', {{
@@ -301,7 +373,7 @@ class DeviceProfile:
             get: () => {specs["device_height"]}
         }});
         Object.defineProperty(screen, 'colorDepth', {{
-            get: () => 24
+            get: () => {specs["color_depth"]}
         }});
 
         // ── WebGL renderer (Tensor G5 GPU) ──
@@ -372,41 +444,57 @@ class DeviceProfile:
     def summary(self) -> str:
         """Human-readable summary for Telegram messages."""
         return (
-            f"📱 <b>Device Profile</b>\n"
-            f"Model: {self.model}\n"
+            f"📱 <b>Hồ sơ thiết bị</b>\n"
+            f"Kiểu máy: {self.model}\n"
             f"Android: {self.android_version}\n"
+            f"Màn hình: {self.specs['device_width']}x{self.specs['device_height']} "
+            f"({self.specs['webgl_renderer']})\n"
             f"Build: {self.build_id}\n"
             f"Chrome: {self.chrome_version}\n"
-            f"Session: <code>{self.session_id[:8]}…</code>"
+            f"Phiên: <code>{self.session_id[:8]}…</code>"
         )
 
 
 # ── Public factory ────────────────────────────────────────────────────────────
 
-def create_device_profile() -> DeviceProfile:
+def create_device_profile(profile_name: Optional[str] = None) -> DeviceProfile:
     """
-    Create a fresh Pixel 10 Pro device profile with unique per-session
-    identifiers and a randomised build ID.
+    Create a fresh Pixel device profile with unique per-session identifiers.
+
+    ``profile_name`` selects which Pixel preset to simulate (see
+    ``config.DEVICE_PRESETS``).  When omitted or unknown, a preset is chosen at
+    random so that repeated calls rotate across the available devices.
     """
-    build_id = _random_build_id()
+    if not profile_name or profile_name not in config.DEVICE_PRESETS:
+        profile_name = random.choice(ALL_DEVICE_PROFILES)
+
+    preset = config.DEVICE_PRESETS[profile_name]
+    model = preset["model"]
+    android_version = preset["android_version"]
+    specs = DEVICE_SPECS_BY_PROFILE.get(profile_name, PIXEL_10_PRO_SPECS)
+
+    build_id = _random_build_id(profile_name)
     chrome_version = _random_chrome_patch()
     template = random.choice(config.USER_AGENT_TEMPLATES)
     user_agent = template.format(
-        android=config.ANDROID_VERSION,
-        model=config.DEVICE_MODEL,
+        android=android_version,
+        model=model,
         build=build_id,
         chrome=chrome_version,
     )
-    fingerprint = _generate_device_fingerprint(
-        config.DEVICE_MODEL,
-        build_id,
-        config.ANDROID_VERSION,
-    )
+    fingerprint = _generate_device_fingerprint(model, build_id, android_version)
     return DeviceProfile(
         imei=_generate_imei(),
         android_id=_generate_android_id(),
         device_fingerprint=fingerprint,
         user_agent=user_agent,
         chrome_version=chrome_version,
+        profile_name=profile_name,
+        model=model,
+        brand=preset["brand"],
+        manufacturer=preset["manufacturer"],
+        android_version=android_version,
+        android_sdk=preset["android_sdk"],
         build_id=build_id,
+        specs=specs,
     )

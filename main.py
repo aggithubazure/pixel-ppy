@@ -16,6 +16,7 @@ accounts.
 import asyncio
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -31,7 +32,7 @@ from telegram.ext import (
 )
 
 import config
-from device_simulator import create_device_profile
+from device_simulator import create_device_profile, ALL_DEVICE_PROFILES
 from google_automation import (
     GoogleAutomationError,
     start_login,
@@ -69,6 +70,7 @@ logger = logging.getLogger(__name__)
 # ── Conversation states ───────────────────────────────────────────────────────
 AWAIT_EMAIL, AWAIT_PASSWORD = range(2)
 AWAIT_2FA_CODE = 10  # Separate state for 2FA code input
+MAX_2FA_ATTEMPTS = 3
 
 # ── Rate limiting & concurrency ───────────────────────────────────────────────
 # Per-user cooldown: maps chat_id → last /check_offer timestamp
@@ -149,18 +151,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message with command menu."""
     await update.message.reply_text(
         "🤖 *Pixel 10 Pro Google One Bot*\n\n"
-        "This bot simulates a Google Pixel 10 Pro (Android 16) device, "
-        "logs into your Google account, and retrieves the *12-month free "
-        "Gemini Pro* offer link from Google One.\n\n"
-        "📋 *Available Commands:*\n"
-        "• /login – Enter your Google account credentials\n"
-        "• /logout – Clear stored credentials\n"
-        "• /check\\_offer – Detect the Gemini Pro offer\n"
-        "• /get\\_link – Show the last captured offer link\n"
-        "• /status – View current session \u0026 device info\n\n"
-        "💡 *Tip:* Both Gmail and Google Workspace accounts are supported.\n\n"
-        "⚠️ *Privacy Note:* Credentials are held in memory only for the "
-        "duration of the session and never stored persistently.",
+        "Bot này giả lập các thiết bị Google Pixel Pro (Pixel 9/10 Pro, XL, Fold – Android 16), "
+        "đăng nhập vào tài khoản Google của bạn và lấy liên kết ưu đãi "
+        "*Gemini Pro miễn phí 12 tháng* từ Google One.\n\n"
+        "📋 *Các lệnh khả dụng:*\n"
+        "• /login – Nhập thông tin đăng nhập tài khoản Google\n"
+        "• /logout – Xóa thông tin đăng nhập đã lưu\n"
+        "• /check\\_offer – Dò tìm ưu đãi Gemini Pro\n"
+        "• /get\\_link – Hiển thị liên kết ưu đãi lấy được gần nhất\n"
+        "• /status – Xem thông tin phiên \u0026 thiết bị hiện tại\n\n"
+        "💡 *Mẹo:* Hỗ trợ cả tài khoản Gmail và Google Workspace.\n\n"
+        "⚠️ *Lưu ý bảo mật:* Thông tin đăng nhập chỉ được giữ trong bộ nhớ "
+        "trong suốt phiên làm việc và không bao giờ được lưu trữ lâu dài.",
         parse_mode="Markdown",
     )
 
@@ -171,8 +173,8 @@ async def login_start(update: Update,
                       context: ContextTypes.DEFAULT_TYPE) -> int:
     """Begin the login conversation – ask for email."""
     await update.message.reply_text(
-        "📧 Please enter your Google account email "
-        "(Gmail or Google Workspace):",
+        "📧 Vui lòng nhập email tài khoản Google của bạn "
+        "(Gmail hoặc Google Workspace):",
         reply_markup=ReplyKeyboardRemove(),
     )
     return AWAIT_EMAIL
@@ -186,8 +188,8 @@ async def login_email(update: Update,
     # Basic email format validation (Gmail and Google Workspace accounts)
     if not re.match(r'^[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}$', email, re.IGNORECASE):
         await update.message.reply_text(
-            "⚠️ Please enter a valid email address "
-            "(e.g. user@gmail.com or user@company.com)."
+            "⚠️ Vui lòng nhập một địa chỉ email hợp lệ "
+            "(ví dụ: user@gmail.com hoặc user@company.com)."
         )
         return AWAIT_EMAIL
 
@@ -198,14 +200,14 @@ async def login_email(update: Update,
         if domain not in [d.lower() for d in allowed]:
             domains_str = ", ".join(f"@{d}" for d in allowed)
             await update.message.reply_text(
-                f"⚠️ Only the following email domains are accepted: "
-                f"{domains_str}\n\nPlease try again."
+                f"⚠️ Chỉ chấp nhận các tên miền email sau: "
+                f"{domains_str}\n\nVui lòng thử lại."
             )
             return AWAIT_EMAIL
 
     context.user_data["pending_email"] = email
     await update.message.reply_text(
-        f"✅ Email received: `{email}`\n\n🔒 Now enter your password:",
+        f"✅ Đã nhận email: `{email}`\n\n🔒 Bây giờ hãy nhập mật khẩu của bạn:",
         parse_mode="Markdown",
     )
     return AWAIT_PASSWORD
@@ -246,12 +248,12 @@ async def login_password(update: Update,
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "✅ *Credentials saved* and a new Pixel 10 Pro device profile has "
-            "been created for this session.\n\n"
+            "✅ *Đã lưu thông tin đăng nhập* và một hồ sơ thiết bị Pixel "
+            "mới đã được tạo cho phiên này.\n\n"
             + session["device"].summary()
-            + ("\U0001f511 TOTP secret saved \u2013 2FA will be handled automatically.\n\n"
+            + ("\U0001f511 Đã lưu khóa bí mật TOTP \u2013 2FA sẽ được xử lý tự động.\n\n"
                if totp_secret else "")
-            + "Use /check\\_offer to search for the Gemini Pro offer."
+            + "Dùng /check\\_offer để tìm ưu đãi Gemini Pro."
         ),
         parse_mode="Markdown",
     )
@@ -263,7 +265,7 @@ async def login_cancel(update: Update,
     """Cancel the login conversation."""
     context.user_data.pop("pending_email", None)
     await update.message.reply_text(
-        "❌ Login cancelled.",
+        "❌ Đã hủy đăng nhập.",
         reply_markup=ReplyKeyboardRemove(),
     )
     return ConversationHandler.END
@@ -278,11 +280,11 @@ async def logout(update: Update,
     if chat_id in SESSION_STORE:
         _clear_session(chat_id)
         await update.message.reply_text(
-            "🔒 Credentials and session data have been securely cleared."
+            "🔒 Thông tin đăng nhập và dữ liệu phiên đã được xóa an toàn."
         )
     else:
         await update.message.reply_text(
-            "ℹ️ No active session to clear."
+            "ℹ️ Không có phiên nào đang hoạt động để xóa."
         )
 
 
@@ -295,10 +297,10 @@ async def _report_offer(update_or_chat_id, context, session, offer_link) -> None
     if offer_link:
         session["offer_link"] = offer_link
         text = (
-            "🎉 <b>Gemini Pro Offer Found!</b>\n\n"
-            "Click the link below to activate your 12-month free Gemini Pro:\n\n"
+            "🎉 <b>Đã tìm thấy ưu đãi Gemini Pro!</b>\n\n"
+            "Nhấp vào liên kết bên dưới để kích hoạt Gemini Pro miễn phí 12 tháng:\n\n"
             f"🔗 {offer_link}\n\n"
-            "Use /get_link to retrieve this link again."
+            "Dùng /get_link để lấy lại liên kết này."
         )
         try:
             await context.bot.send_message(
@@ -308,16 +310,16 @@ async def _report_offer(update_or_chat_id, context, session, offer_link) -> None
             # Fallback: send without formatting
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"🎉 Gemini Pro Offer Found!\n\n🔗 {offer_link}\n\nUse /get_link to retrieve this link again.",
+                text=f"🎉 Đã tìm thấy ưu đãi Gemini Pro!\n\n🔗 {offer_link}\n\nDùng /get_link để lấy lại liên kết này.",
             )
     else:
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                "😔 No active Gemini Pro offer was detected on your Google One "
-                "account at this time.\n\n"
-                "The offer may not be available for your account region or may "
-                "have already been activated. Try again later."
+                "😔 Hiện chưa phát hiện ưu đãi Gemini Pro nào đang hoạt động "
+                "trên tài khoản Google One của bạn.\n\n"
+                "Ưu đãi có thể không khả dụng cho khu vực tài khoản của bạn hoặc "
+                "đã được kích hoạt trước đó. Vui lòng thử lại sau."
             ),
         )
 
@@ -335,7 +337,7 @@ async def check_offer(update: Update,
 
     if not session.get("email") or not session.get("password"):
         await update.message.reply_text(
-            "⚠️ No credentials found. Please use /login first."
+            "⚠️ Không tìm thấy thông tin đăng nhập. Vui lòng dùng /login trước."
         )
         return ConversationHandler.END
 
@@ -346,7 +348,7 @@ async def check_offer(update: Update,
         remaining = int(CHECK_OFFER_COOLDOWN - elapsed)
         mins, secs = divmod(remaining, 60)
         await update.message.reply_text(
-            f"⏳ Please wait {mins}m {secs}s before checking again."
+            f"⏳ Vui lòng đợi {mins} phút {secs} giây trước khi kiểm tra lại."
         )
         return ConversationHandler.END
     _LAST_CHECK_TIME[chat_id] = time.time()
@@ -354,15 +356,15 @@ async def check_offer(update: Update,
     # ── Concurrency check ─────────────────────────────────────────────────
     if _CHROME_SEMAPHORE.locked():
         await update.message.reply_text(
-            "🔄 The system is currently at maximum capacity. "
-            "Please try again in a minute."
+            "🔄 Hệ thống hiện đang hoạt động ở công suất tối đa. "
+            "Vui lòng thử lại sau một phút."
         )
         _LAST_CHECK_TIME.pop(chat_id, None)
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "⏳ Launching Pixel 10 Pro device simulator and logging in…\n"
-        "This may take up to 60 seconds."
+        "⏳ Đang khởi động trình giả lập thiết bị Pixel và đăng nhập…\n"
+        "Quá trình này có thể mất tới 60 giây."
     )
 
     try:
@@ -372,15 +374,19 @@ async def check_offer(update: Update,
             pw_str = bytes(session["password"]).decode("utf-8")
             offer_link = None
 
+            # Shuffle the presets so each attempt simulates a distinct Pixel model.
+            rotation = random.sample(ALL_DEVICE_PROFILES, k=len(ALL_DEVICE_PROFILES))
+
             for attempt in range(1, _MAX_OFFER_ATTEMPTS + 1):
-                # Create a fresh device profile for each attempt
-                device = create_device_profile()
+                # Rotate to a different Pixel preset on each attempt
+                profile_name = rotation[(attempt - 1) % len(rotation)]
+                device = create_device_profile(profile_name)
                 session["device"] = device
 
                 if attempt > 1:
                     await update.message.reply_text(
-                        f"🔄 Attempt {attempt}/{_MAX_OFFER_ATTEMPTS}: "
-                        "Creating new Pixel 10 Pro device and retrying…"
+                        f"🔄 Lần thử {attempt}/{_MAX_OFFER_ATTEMPTS}: "
+                        f"Đang giả lập {device.model} và thử lại…"
                     )
 
                 # Start login in a thread
@@ -409,15 +415,15 @@ async def check_offer(update: Update,
                                     close_driver(driver)
                                     driver = None
                                     await update.message.reply_text(
-                                        "❌ Auto-generated TOTP code was rejected. "
-                                        "Please check your TOTP secret key."
+                                        "❌ Mã TOTP tự tạo đã bị từ chối. "
+                                        "Vui lòng kiểm tra lại khóa bí mật TOTP của bạn."
                                     )
                                     return ConversationHandler.END
 
                                 # 2FA passed – notify and check offer
                                 await update.message.reply_text(
-                                    f"✅ 登录成功（第 {attempt}/{_MAX_OFFER_ATTEMPTS} 次），"
-                                    "正在检查 Gemini Pro 优惠…"
+                                    f"✅ Đăng nhập thành công (lần {attempt}/{_MAX_OFFER_ATTEMPTS}), "
+                                    "đang kiểm tra ưu đãi Gemini Pro…"
                                 )
                                 offer_link = await asyncio.to_thread(
                                     check_offer_with_driver, driver,
@@ -427,25 +433,29 @@ async def check_offer(update: Update,
                                 close_driver(driver)
                                 driver = None
                                 await update.message.reply_text(
-                                    f"❌ Auto-TOTP error: {exc}\n"
-                                    "Please check your TOTP secret key."
+                                    f"❌ Lỗi tự động nhập TOTP: {exc}\n"
+                                    "Vui lòng kiểm tra lại khóa bí mật TOTP của bạn."
                                 )
                                 return ConversationHandler.END
                         else:
                             # No TOTP secret – ask user for code interactively
                             # (no retry for interactive 2FA)
                             session["_driver"] = driver
+                            session["_2fa_attempts"] = 0
+                            # IMPORTANT: clear local ref so the `finally` below does
+                            # NOT close the driver we just handed off to the session.
+                            driver = None
                             await update.message.reply_text(
-                                "🔐 *Two-Factor Authentication Required*\n\n"
-                                "Please enter your 6-digit authenticator code:",
+                                "🔐 *Yêu cầu xác thực hai yếu tố (2FA)*\n\n"
+                                "Vui lòng nhập mã 6 chữ số từ ứng dụng xác thực của bạn:",
                                 parse_mode="Markdown",
                             )
                             return AWAIT_2FA_CODE
                     else:
                         # Login succeeded (no 2FA) – notify and check offer
                         await update.message.reply_text(
-                            f"✅ 登录成功（第 {attempt}/{_MAX_OFFER_ATTEMPTS} 次），"
-                            "正在检查 Gemini Pro 优惠…"
+                            f"✅ Đăng nhập thành công (lần {attempt}/{_MAX_OFFER_ATTEMPTS}), "
+                            "đang kiểm tra ưu đãi Gemini Pro…"
                         )
                         offer_link = await asyncio.to_thread(
                             check_offer_with_driver, driver,
@@ -470,15 +480,14 @@ async def check_offer(update: Update,
 
                 # Wait before next attempt to avoid rate-limiting
                 if attempt < _MAX_OFFER_ATTEMPTS:
-                    import random as _rand
-                    delay = _rand.randint(15, 30)
+                    delay = random.randint(15, 30)
                     await update.message.reply_text(
-                        f"⏳ 未检测到优惠，{delay} 秒后开始第 {attempt + 1} 次尝试…"
+                        f"⏳ Chưa phát hiện ưu đãi, sẽ bắt đầu lần thử thứ {attempt + 1} sau {delay} giây…"
                     )
                     await asyncio.sleep(delay)
                     await update.message.reply_text(
-                        f"🔄 开始第 {attempt + 1}/{_MAX_OFFER_ATTEMPTS} 次尝试，"
-                        "正在创建新设备并登录…"
+                        f"🔄 Bắt đầu lần thử {attempt + 1}/{_MAX_OFFER_ATTEMPTS}, "
+                        "đang tạo thiết bị mới và đăng nhập…"
                     )
 
     except GoogleAutomationError as exc:
@@ -492,14 +501,14 @@ async def check_offer(update: Update,
         }:
             _LAST_CHECK_TIME.pop(chat_id, None)
         await update.message.reply_text(
-            f"❌ <b>Error ({error_code}):</b> {exc}",
+            f"❌ <b>Lỗi ({error_code}):</b> {exc}",
             parse_mode="HTML",
         )
         return ConversationHandler.END
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)
         await update.message.reply_text(
-            f"❌ An unexpected error occurred: {exc}"
+            f"❌ Đã xảy ra lỗi không mong muốn: {exc}"
         )
         return ConversationHandler.END
     finally:
@@ -511,13 +520,13 @@ async def check_offer(update: Update,
 
     if not offer_link:
         await update.message.reply_text(
-            f"❌ 经过 {_MAX_OFFER_ATTEMPTS} 次尝试，未找到 Gemini Pro 优惠。\n\n"
-            "您的账号不符合 Pixel 设备 Gemini Pro 12个月免费领取条件。\n"
-            "可能的原因：\n"
-            "• 账号地区不支持\n"
-            "• 已有有效的 Gemini Pro 订阅\n"
-            "• 账号在家庭组中且有成员已订阅\n"
-            "• 新注册账号触发风控"
+            f"❌ Sau {_MAX_OFFER_ATTEMPTS} lần thử, không tìm thấy ưu đãi Gemini Pro.\n\n"
+            "Tài khoản của bạn không đủ điều kiện nhận Gemini Pro miễn phí 12 tháng trên thiết bị Pixel.\n"
+            "Các nguyên nhân có thể:\n"
+            "• Khu vực tài khoản không được hỗ trợ\n"
+            "• Đã có gói đăng ký Gemini Pro đang hoạt động\n"
+            "• Tài khoản thuộc nhóm gia đình và đã có thành viên đăng ký\n"
+            "• Tài khoản mới đăng ký bị kiểm soát rủi ro"
         )
         return ConversationHandler.END
 
@@ -542,22 +551,23 @@ async def handle_2fa_code(update: Update,
     if not driver:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="⚠️ Session expired. Please run /check\_offer again.",
+            text="⚠️ Phiên đã hết hạn. Vui lòng chạy /check_offer lại.",
         )
         return ConversationHandler.END
+    attempts = int(session.get("_2fa_attempts", 0))
 
     # Validate code format
     if not code.isdigit() or len(code) != 6:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="⚠️ Invalid code. Please enter a 6-digit number.",
+            text="⚠️ Mã không hợp lệ. Vui lòng nhập một số gồm 6 chữ số.",
         )
         session["_driver"] = driver  # Put driver back
         return AWAIT_2FA_CODE
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text="🔄 Verifying code…",
+        text="🔄 Đang xác minh mã…",
     )
 
     try:
@@ -566,11 +576,40 @@ async def handle_2fa_code(update: Update,
                 submit_2fa_code, driver, code,
             )
 
-            if not accepted:
+            if accepted is None:
                 close_driver(driver)
+                session.pop("_2fa_attempts", None)
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="❌ Code rejected. Please run /check\_offer again.",
+                    text=(
+                        "❌ Phiên trình duyệt đã gặp sự cố khi đang xác minh mã 2FA.\n"
+                        "Đây không phải do nhập sai mã. Vui lòng chạy /check\\_offer lại."
+                    ),
+                )
+                return ConversationHandler.END
+
+            if not accepted:
+                attempts += 1
+                session["_2fa_attempts"] = attempts
+                if attempts < MAX_2FA_ATTEMPTS:
+                    session["_driver"] = driver
+                    remaining = MAX_2FA_ATTEMPTS - attempts
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"❌ Mã bị từ chối. Vui lòng nhập mã 6 chữ số mới.\n"
+                            f"Số lần thử còn lại: {remaining}"
+                        ),
+                    )
+                    return AWAIT_2FA_CODE
+                close_driver(driver)
+                session.pop("_2fa_attempts", None)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "❌ Mã bị từ chối quá nhiều lần. "
+                        "Vui lòng chạy /check\\_offer lại."
+                    ),
                 )
                 return ConversationHandler.END
 
@@ -581,13 +620,14 @@ async def handle_2fa_code(update: Update,
                 )
             finally:
                 close_driver(driver)
+                session.pop("_2fa_attempts", None)
 
     except Exception as exc:
         logger.exception("Error in 2FA for chat %s", chat_id)
         close_driver(driver)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"❌ Error: {exc}",
+            text=f"❌ Lỗi: {exc}",
         )
         return ConversationHandler.END
     finally:
@@ -606,8 +646,9 @@ async def cancel_2fa(update: Update,
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
     driver = session.pop("_driver", None)
+    session.pop("_2fa_attempts", None)
     close_driver(driver)
-    await update.message.reply_text("❌ 2FA cancelled.")
+    await update.message.reply_text("❌ Đã hủy 2FA.")
     return ConversationHandler.END
 
 
@@ -622,13 +663,13 @@ async def get_link(update: Update,
 
     if link:
         await update.message.reply_text(
-            f"🔗 <b>Last captured offer link:</b>\n\n{link}",
+            f"🔗 <b>Liên kết ưu đãi lấy được gần nhất:</b>\n\n{link}",
             parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
-            "ℹ️ No offer link has been captured yet. "
-            "Use /check\\_offer to search for the Gemini Pro offer.",
+            "ℹ️ Chưa lấy được liên kết ưu đãi nào. "
+            "Dùng /check\\_offer để tìm ưu đãi Gemini Pro.",
             parse_mode="Markdown",
         )
 
@@ -642,7 +683,7 @@ async def status(update: Update,
 
     if chat_id not in SESSION_STORE or not SESSION_STORE[chat_id]:
         await update.message.reply_text(
-            "ℹ️ No active session. Use /login to get started."
+            "ℹ️ Không có phiên nào đang hoạt động. Dùng /login để bắt đầu."
         )
         return
 
@@ -659,10 +700,10 @@ async def status(update: Update,
     device = session.get("device")
 
     lines = [
-        "📊 *Session Status*\n",
-        f"Account: `{email}`",
-        f"Credentials loaded: {'✅' if has_creds else '❌'}",
-        f"Offer link captured: {'✅' if offer_link else '❌'}",
+        "📊 *Trạng thái phiên*\n",
+        f"Tài khoản: `{email}`",
+        f"Đã nạp thông tin đăng nhập: {'✅' if has_creds else '❌'}",
+        f"Đã lấy liên kết ưu đãi: {'✅' if offer_link else '❌'}",
     ]
 
     if device:
@@ -731,10 +772,11 @@ def main() -> None:
             chat_id = update.effective_chat.id
             session = SESSION_STORE.get(chat_id, {})
             driver = session.pop("_driver", None)
+            session.pop("_2fa_attempts", None)
             close_driver(driver)
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="⏰ 2FA verification timed out. Please run /check_offer again.",
+                text="⏰ Xác minh 2FA đã hết thời gian chờ. Vui lòng chạy /check_offer lại.",
             )
         return ConversationHandler.END
 

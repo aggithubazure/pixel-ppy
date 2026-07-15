@@ -23,6 +23,7 @@ from selenium.common.exceptions import (
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
@@ -58,6 +59,20 @@ def _classify_login_error_message(error_text: str) -> str:
     return "failed"
 
 
+def _is_google_rejected_page(driver: webdriver.Chrome) -> bool:
+    """Return True when Google serves the anti-automation/rejected sign-in page."""
+    try:
+        current_url = (driver.current_url or "").lower()
+        title = (driver.title or "").lower()
+        if "/signin/rejected" in current_url:
+            return True
+        if "couldn't sign you in" in title or "couldn’t sign you in" in title:
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _ensure_chromium_installed() -> tuple[str, str]:
     """Find Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path).
 
@@ -76,13 +91,13 @@ def _ensure_chromium_installed() -> tuple[str, str]:
 
     if not chrome_bin:
         raise GoogleAutomationError(
-            "Chromium is not installed. "
-            "Set CHROME_BIN env var or install chromium."
+            "Chưa cài đặt Chromium. "
+            "Hãy đặt biến môi trường CHROME_BIN hoặc cài đặt chromium."
         )
     if not chromedriver_path:
         raise GoogleAutomationError(
-            "chromedriver is not installed. "
-            "Set CHROMEDRIVER_PATH env var or install chromedriver."
+            "Chưa cài đặt chromedriver. "
+            "Hãy đặt biến môi trường CHROMEDRIVER_PATH hoặc cài đặt chromedriver."
         )
 
     return chrome_bin, chromedriver_path
@@ -90,7 +105,7 @@ def _ensure_chromium_installed() -> tuple[str, str]:
 
 def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     """Return a headless Chrome WebDriver configured for the device profile."""
-    from device_simulator import PIXEL_10_PRO_SPECS as SPECS
+    SPECS = profile.specs
 
     options = Options()
 
@@ -139,7 +154,7 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     else:
         logger.warning("No Chrome/Chromium found – driver may fail to start.")
 
-    # Mobile emulation – Pixel 10 Pro viewport
+    # Mobile emulation – device viewport for the selected Pixel preset
     mobile_emulation = {
         "deviceMetrics": {
             "width": SPECS["width"],
@@ -234,6 +249,61 @@ def _save_debug_screenshot(driver: webdriver.Chrome, label: str) -> None:
         logger.warning("Could not save debug screenshot: %s", exc)
 
 
+def _dump_offer_page_diagnostics(driver: webdriver.Chrome) -> None:
+    """Log exactly what Google returns on the plans page when no offer is found.
+
+    Google encodes eligibility in the benefit-link hrefs (e.g. a ``LOCKED``
+    ``BARD_ADVANCED`` link, or a region/tier code). Capturing the anchors,
+    visible text, page HTML and a screenshot tells us whether the account is
+    ineligible, the page hit a consent/anti-bot wall, or the layout changed.
+    """
+    try:
+        logger.info("── Offer diagnostics ──────────────────────────────")
+        logger.info("URL: %s", driver.current_url)
+        logger.info("Title: %r", driver.title)
+
+        anchors = driver.find_elements(By.TAG_NAME, "a")
+        markers = ("BARD_ADVANCED", "LOCKED", "UNLOCKED", "benefit",
+                   "partner-eft", "gemini", "offer", "g1-tier", "GEMINI")
+        benefit_hrefs = []
+        for a in anchors:
+            try:
+                href = a.get_attribute("href") or ""
+            except Exception:
+                continue
+            if any(m in href for m in markers):
+                benefit_hrefs.append(href)
+
+        logger.info("Total anchors on page: %d", len(anchors))
+        if benefit_hrefs:
+            logger.info("Benefit/offer links found (%d):", len(benefit_hrefs))
+            for h in benefit_hrefs[:20]:
+                logger.info("   • %s", h)
+        else:
+            logger.info("No benefit/offer/BARD_ADVANCED anchor present on page.")
+
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+        except Exception:
+            body_text = ""
+        snippet = " ".join(body_text.split())[:1000]
+        logger.info("Visible text snippet: %s", snippet)
+        logger.info("───────────────────────────────────────────────────")
+
+        try:
+            os.makedirs(_LOG_DIR, exist_ok=True)
+            path = os.path.join(_LOG_DIR, f"offer_page_{int(time.time())}.html")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(driver.page_source)
+            logger.info("Full offer page HTML saved: %s", path)
+        except Exception as exc:
+            logger.warning("Could not save offer page HTML: %s", exc)
+
+        _save_debug_screenshot(driver, "offer_not_found")
+    except Exception as exc:
+        logger.warning("Offer diagnostics failed: %s", exc)
+
+
 def _wait_for(driver: webdriver.Chrome, by: str, value: str,
                timeout: int = config.WEBDRIVER_TIMEOUT) -> WebElement:
     """Return element after waiting for it to be clickable."""
@@ -306,9 +376,9 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
                 driver.page_source[:500],
             )
             raise GoogleAutomationError(
-                "Could not find the Google sign-in email input. "
-                "Google may be showing a bot-detection/challenge page. "
-                "A screenshot was saved to /app/logs/ for inspection.",
+                "Không tìm thấy ô nhập email đăng nhập Google. "
+                "Google có thể đang hiển thị trang chống bot/xác minh. "
+                "Một ảnh chụp màn hình đã được lưu vào thư mục logs/ để kiểm tra.",
                 code="email_field_missing",
             )
 
@@ -322,18 +392,55 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
             email_field.clear()
             email_field.send_keys(email)
 
-        next_btn = _wait_for(driver, By.ID, "identifierNext")
-        next_btn.click()
+        clicked_next = False
+        for _retry in range(3):
+            try:
+                next_btn = _wait_for(driver, By.ID, "identifierNext")
+                next_btn.click()
+                clicked_next = True
+                break
+            except StaleElementReferenceException:
+                logger.warning("Stale element on identifierNext, retrying (%d/3)", _retry + 1)
+                time.sleep(1)
+        if not clicked_next:
+            logger.error("Could not click identifierNext after retries")
+            return "failed"
         time.sleep(1)
 
-        # ── Password step ─────────────────────────────────────────────────────
-        password_field = _wait_for(driver, By.CSS_SELECTOR,
-                                   'input[type="password"]')
-        password_field.clear()
-        password_field.send_keys(password)
+        if _is_google_rejected_page(driver):
+            logger.warning("Google rejected sign-in right after email step (URL: %s)", driver.current_url)
+            return "google_challenge"
 
-        pw_next = _wait_for(driver, By.ID, "passwordNext")
-        pw_next.click()
+        # ── Password step ─────────────────────────────────────────────────────
+        password_filled = False
+        for _retry in range(3):
+            try:
+                password_field = _wait_for(driver, By.CSS_SELECTOR,
+                                           'input[type="password"]')
+                password_field.clear()
+                password_field.send_keys(password)
+                password_filled = True
+                break
+            except StaleElementReferenceException:
+                logger.warning("Stale element on password field, retrying (%d/3)", _retry + 1)
+                time.sleep(1)
+        if not password_filled:
+            logger.error("Could not fill password field after retries")
+            return "failed"
+
+        clicked_pw_next = False
+        for _retry in range(3):
+            try:
+                pw_next = _wait_for(driver, By.ID, "passwordNext")
+                pw_next.click()
+                clicked_pw_next = True
+                break
+            except StaleElementReferenceException:
+                logger.warning("Stale element on passwordNext, retrying (%d/3)", _retry + 1)
+                time.sleep(1)
+        if not clicked_pw_next:
+            logger.error("Could not click passwordNext after retries")
+            return "failed"
         time.sleep(2)
 
         # ── Detect 2FA / verification challenges ─────────────────────────────
@@ -459,36 +566,36 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
             # No TOTP option found → raise error with detailed guidance
             page_text = driver.page_source.lower()
             if "security key" in page_text or "usb" in page_text or "/challenge/sk" in current_url:
-                challenge_type = "security key / passkey"
+                challenge_type = "khóa bảo mật / passkey"
                 guidance = (
-                    "Your account uses a hardware security key (passkey) as 2FA. "
-                    "The bot cannot use hardware keys.\n\n"
-                    "✅ Solution: Create an App Password at "
+                    "Tài khoản của bạn dùng khóa bảo mật phần cứng (passkey) làm 2FA. "
+                    "Bot không thể sử dụng khóa phần cứng.\n\n"
+                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
                     "https://myaccount.google.com/apppasswords "
-                    "and use it instead of your Gmail password in /login."
+                    "và dùng nó thay cho mật khẩu Gmail trong /login."
                 )
             elif "phone" in page_text or "sms" in page_text:
-                challenge_type = "SMS / phone verification"
+                challenge_type = "xác minh qua SMS / điện thoại"
                 guidance = (
-                    "Your account uses SMS as 2FA. "
-                    "✅ Solution: Create an App Password at "
+                    "Tài khoản của bạn dùng SMS làm 2FA. "
+                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
                     "https://myaccount.google.com/apppasswords "
-                    "and use it instead of your Gmail password in /login."
+                    "và dùng nó thay cho mật khẩu Gmail trong /login."
                 )
             elif "tap yes" in page_text or "google prompt" in page_text:
-                challenge_type = "Google prompt (tap Yes on your phone)"
+                challenge_type = "Google prompt (nhấn Yes trên điện thoại)"
                 guidance = (
-                    "Your account uses Google prompt 2FA. "
-                    "✅ Solution: Create an App Password at "
+                    "Tài khoản của bạn dùng 2FA kiểu Google prompt. "
+                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
                     "https://myaccount.google.com/apppasswords "
-                    "and use it instead of your Gmail password in /login."
+                    "và dùng nó thay cho mật khẩu Gmail trong /login."
                 )
             else:
-                challenge_type = "two-step verification"
+                challenge_type = "xác minh 2 bước"
                 guidance = (
-                    "✅ Solution: Create an App Password at "
+                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
                     "https://myaccount.google.com/apppasswords "
-                    "and use it instead of your Gmail password in /login."
+                    "và dùng nó thay cho mật khẩu Gmail trong /login."
                 )
 
             logger.warning(
@@ -496,7 +603,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
                 email, challenge_type, current_url,
             )
             raise GoogleAutomationError(
-                f"2FA required: {challenge_type}\n\n{guidance}",
+                f"Yêu cầu 2FA: {challenge_type}\n\n{guidance}",
                 code="unsupported_2fa",
             )
 
@@ -532,6 +639,9 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         return "failed"
 
     except TimeoutException as exc:
+        if _is_google_rejected_page(driver):
+            logger.warning("Google rejected sign-in page detected during timeout (URL: %s)", driver.current_url)
+            return "google_challenge"
         # Save screenshot so we can inspect what Google actually showed
         _save_debug_screenshot(driver, "login_timeout")
         try:
@@ -548,10 +658,13 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         return "failed"
 
 
-def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
+def _submit_totp_code(driver: webdriver.Chrome, code: str) -> Optional[bool]:
     """Enter a TOTP / authenticator code on the 2FA challenge page.
 
-    Returns True if the code was accepted and login completed.
+    Returns:
+        True  – code accepted, login completed
+        False – code rejected
+        None  – browser session crashed/disconnected during verification
     """
     try:
         # Find the TOTP input field
@@ -577,38 +690,98 @@ def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
 
         totp_field.clear()
         totp_field.send_keys(code)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
-        # Click Next / Verify button
-        for btn_selector in (
-            '#totpNext',
-            'button[jsname="LgbsSe"]',
-            '[data-action="verify"]',
-            'button[type="submit"]',
-        ):
+        # Submit the code. Pressing ENTER in the field is the most reliable way
+        # to submit Google's TOTP form; fall back to the Next button only if
+        # ENTER cannot be sent. (The old code clicked button[jsname="LgbsSe"],
+        # a generic Material-button jsname that can match the wrong button.)
+        try:
+            totp_field.send_keys(Keys.ENTER)
+        except (StaleElementReferenceException, WebDriverException):
+            for btn_selector in ('#totpNext', '#totpNext button',
+                                 'button[type="submit"]'):
+                try:
+                    driver.find_element(By.CSS_SELECTOR, btn_selector).click()
+                    break
+                except NoSuchElementException:
+                    continue
+
+        # Poll for the outcome instead of a single premature 2-second check.
+        # Google needs a few seconds to validate the code and redirect, and may
+        # show a post-2FA interstitial (e.g. passkey speedbump) whose URL still
+        # contains "challenge". Checking too early wrongly reports a valid code
+        # as rejected — which is exactly the bug users hit.
+        wrong_code_markers = (
+            "wrong code",
+            "that code didn",       # "That code didn't work. Try again."
+            "incorrect code",
+            "código incorrecto",
+            "codigo incorrecto",
+        )
+        totp_input_selectors = (
+            'input[type="tel"]',
+            'input[name="totpPin"]',
+            '#totpPin',
+        )
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            time.sleep(1.0)
+
+            current_url = driver.current_url        # raises if session died
+            parsed = urlparse(current_url)
+            hostname = parsed.hostname or ""
+            path = parsed.path or ""
+
+            # 1) Explicit "wrong code" error from Google → definitive rejection
             try:
-                btn = driver.find_element(By.CSS_SELECTOR, btn_selector)
-                btn.click()
-                break
-            except NoSuchElementException:
+                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+            except (NoSuchElementException, StaleElementReferenceException):
+                page_text = ""
+            if any(m in page_text for m in wrong_code_markers):
+                logger.warning("Google reported a wrong TOTP code (url=%s)", current_url)
+                _save_debug_screenshot(driver, "totp_wrong_code")
+                return False
+
+            # 2) Left the sign-in challenge entirely → accepted
+            if not (hostname == "accounts.google.com" and "challenge" in path):
+                logger.info("TOTP accepted, login proceeded to %s", current_url)
+                return True
+
+            # 3) Still on accounts.google.com/challenge but the TOTP input is
+            #    gone → advanced to a follow-up step → accepted
+            try:
+                totp_still_present = any(
+                    driver.find_elements(By.CSS_SELECTOR, sel)
+                    for sel in totp_input_selectors
+                )
+            except (StaleElementReferenceException, WebDriverException):
                 continue
+            if not totp_still_present:
+                logger.info("TOTP input gone after submit – code accepted")
+                return True
 
-        time.sleep(2)
+            # Otherwise still processing / still on the TOTP page → keep polling
 
-        # Check if we left the challenge page
-        current_url = driver.current_url
-        parsed = urlparse(current_url)
-        hostname = parsed.hostname or ""
-        path = parsed.path or ""
-
-        if hostname == "accounts.google.com" and "challenge" in path:
-            logger.warning("Still on challenge page after TOTP – code may be wrong")
-            return False
-
-        logger.info("TOTP accepted, login completed")
-        return True
+        logger.warning(
+            "TOTP outcome unresolved after 20s (still on challenge, no explicit "
+            "error) – treating as wrong code. url=%s", driver.current_url
+        )
+        _save_debug_screenshot(driver, "totp_unresolved")
+        return False
 
     except Exception as exc:
+        message = str(exc).lower()
+        if any(k in message for k in (
+            "connection refused",
+            "failed to establish a new connection",
+            "actively refused",
+            "winerror 10061",
+            "disconnected",
+            "invalid session id",
+        )):
+            logger.error("Browser session crashed during TOTP submit: %s", exc)
+            return None
         logger.error("Error submitting TOTP code: %s", exc)
         return False
 
@@ -814,6 +987,8 @@ def _navigate_google_one(driver: webdriver.Chrome) -> Optional[str]:
         except (TimeoutException, WebDriverException) as exc:
             logger.warning("Error accessing %s: %s", url, exc)
 
+    # No offer link found on either URL — capture exactly what Google returned.
+    _dump_offer_page_diagnostics(driver)
     return None
 
 
@@ -846,31 +1021,31 @@ def start_login(email: str, password: str,
         if status == "invalid_credentials":
             driver.quit()
             raise GoogleAutomationError(
-                "Google rejected your email/password. Please re-check credentials or use an App Password if 2FA is enabled.",
+                "Google đã từ chối email/mật khẩu của bạn. Vui lòng kiểm tra lại thông tin đăng nhập hoặc dùng Mật khẩu ứng dụng nếu đã bật 2FA.",
                 code="invalid_credentials",
             )
         if status == "google_challenge":
             driver.quit()
             raise GoogleAutomationError(
-                "Google blocked this automated sign-in (security challenge/risk check). Try confirming the login manually on the same server IP, then run /check_offer again.",
+                "Google đã chặn lần đăng nhập tự động này (thử thách bảo mật/kiểm tra rủi ro). Hãy thử xác nhận đăng nhập thủ công trên cùng IP máy chủ, sau đó chạy /check_offer lại.",
                 code="google_challenge",
             )
         if status == "timeout":
             driver.quit()
             raise GoogleAutomationError(
-                "Login timed out while waiting for Google sign-in elements. This is usually page/challenge latency rather than wrong credentials.",
+                "Đăng nhập hết thời gian chờ trong khi đợi các phần tử đăng nhập của Google. Nguyên nhân thường do độ trễ của trang/thử thách bảo mật chứ không phải sai thông tin đăng nhập.",
                 code="login_timeout",
             )
         if status == "webdriver_crashed":
             driver.quit()
             raise GoogleAutomationError(
-                "Browser session crashed/disconnected during login (WebDriver connection refused). Check Chromium stability and container limits.",
+                "Phiên trình duyệt đã gặp sự cố/mất kết nối trong khi đăng nhập (kết nối WebDriver bị từ chối). Hãy kiểm tra độ ổn định của Chromium và giới hạn tài nguyên.",
                 code="webdriver_crashed",
             )
         if status == "failed":
             driver.quit()
             raise GoogleAutomationError(
-                "Login failed at an unexpected step (not a clear credential error). Check server logs for the exact Google page state.",
+                "Đăng nhập thất bại ở một bước ngoài dự kiến (không phải lỗi thông tin đăng nhập rõ ràng). Hãy kiểm tra log máy chủ để biết chính xác trạng thái trang Google.",
                 code="login_unknown",
             )
         return driver, status
@@ -923,10 +1098,12 @@ def close_driver(driver) -> None:
 
     # Force-kill any leftover chromedriver / Chrome child processes
     import os, signal
+    kill_signal = getattr(signal, "SIGKILL", None) or getattr(signal, "SIGTERM", None)
     for pid in pids_to_kill:
         try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+            if kill_signal:
+                os.kill(pid, kill_signal)
+        except Exception:
             pass
 
     # Sweep any orphaned Chromium processes (safe: semaphore guarantees 1 session)
