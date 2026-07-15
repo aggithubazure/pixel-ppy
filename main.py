@@ -678,8 +678,21 @@ async def status(update: Update,
 # ── Periodic cleanup ──────────────────────────────────────────────────────────
 
 async def _session_cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Periodic callback to purge expired sessions."""
+    """Periodic callback to purge expired sessions and orphaned Chrome processes."""
     _purge_expired_sessions()
+    # Sweep any orphaned Chromium processes not cleaned by close_driver
+    # (only runs when semaphore is free, i.e. no active session)
+    if not _CHROME_SEMAPHORE.locked():
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["pkill", "-9", "-f", "chromium"],
+                capture_output=True, timeout=5,
+            )
+            if result.returncode == 0:
+                logger.info("Periodic cleanup: killed orphaned Chromium process(es)")
+        except Exception:
+            pass
 
 
 # ── Application setup ─────────────────────────────────────────────────────────

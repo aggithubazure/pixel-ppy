@@ -118,9 +118,17 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--disable-default-apps")
     options.add_argument("--disable-translate")
     options.add_argument("--no-first-run")
-    options.add_argument("--js-flags=--max-old-space-size=512")
     options.add_argument("--disable-ipc-flooding-protection")
     options.add_argument("--disable-popup-blocking")
+
+    # ── Memory reduction flags ───────────────────────────────────────────────
+    options.add_argument("--js-flags=--max-old-space-size=256")  # reduced from 512
+    options.add_argument("--aggressive-cache-discard")
+    options.add_argument("--disable-application-cache")
+    options.add_argument("--disk-cache-size=0")
+    options.add_argument("--media-cache-size=0")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--memory-pressure-off")  # let Linux OOM killer manage instead
 
     # ── Locate Chrome/Chromium and chromedriver ───────────────────────────
     chrome_bin, chromedriver_path = _ensure_chromium_installed()
@@ -891,9 +899,44 @@ def check_offer_with_driver(driver) -> Optional[str]:
 
 
 def close_driver(driver) -> None:
-    """Safely close the WebDriver."""
-    if driver:
+    """Safely close the WebDriver and force-kill any orphaned Chrome processes."""
+    if not driver:
+        return
+
+    # Collect PIDs before quitting so we can force-kill orphans
+    pids_to_kill: list[int] = []
+    try:
+        if (
+            hasattr(driver, "service")
+            and driver.service
+            and hasattr(driver.service, "process")
+            and driver.service.process
+        ):
+            pids_to_kill.append(driver.service.process.pid)
+    except Exception:
+        pass
+
+    try:
+        driver.quit()
+    except Exception:
+        pass
+
+    # Force-kill any leftover chromedriver / Chrome child processes
+    import os, signal
+    for pid in pids_to_kill:
         try:
-            driver.quit()
-        except Exception:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    # Sweep any orphaned Chromium processes (safe: semaphore guarantees 1 session)
+    try:
+        import subprocess
+        subprocess.run(
+            ["pkill", "-9", "-f", "chromium"],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+    logger.debug("Driver closed and Chrome processes cleaned up")
