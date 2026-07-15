@@ -111,18 +111,16 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     # ── Stability flags ──────────────────────────────────────────────────────
     # NOTE: --disable-features=VizDisplayCompositor removed — breaks rendering
     # in new headless mode and can prevent Google sign-in form from appearing.
+    # NOTE: --renderer-process-limit removed — can cause Chrome process crashes.
     options.add_argument("--disable-software-rasterizer")
     options.add_argument("--disable-crash-reporter")
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-default-apps")
     options.add_argument("--disable-translate")
     options.add_argument("--no-first-run")
-    options.add_argument("--renderer-process-limit=2")
     options.add_argument("--js-flags=--max-old-space-size=512")
     options.add_argument("--disable-ipc-flooding-protection")
-    # Allow JS to fully settle after navigation (important for Google v3 login)
-    options.add_argument("--enable-javascript")
-    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-popup-blocking")
 
     # ── Locate Chrome/Chromium and chromedriver ───────────────────────────
     chrome_bin, chromedriver_path = _ensure_chromium_installed()
@@ -211,6 +209,23 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
 
 # ── Login helper ──────────────────────────────────────────────────────────────
 
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
+
+def _save_debug_screenshot(driver: webdriver.Chrome, label: str) -> None:
+    """Save a screenshot to /app/logs/ for debugging failed page states."""
+    try:
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        filename = os.path.join(
+            _LOG_DIR,
+            f"debug_{label}_{int(time.time())}.png",
+        )
+        driver.save_screenshot(filename)
+        logger.info("Debug screenshot saved: %s", filename)
+    except Exception as exc:
+        logger.warning("Could not save debug screenshot: %s", exc)
+
+
 def _wait_for(driver: webdriver.Chrome, by: str, value: str,
                timeout: int = config.WEBDRIVER_TIMEOUT) -> WebElement:
     """Return element after waiting for it to be clickable."""
@@ -236,22 +251,68 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     try:
         driver.implicitly_wait(0)  # Prevent find_element from blocking
         driver.get(config.GMAIL_LOGIN_URL)
-        time.sleep(3)  # Wait for page + injected JS to fully settle
+
+        # Wait for page to be fully interactive before looking for elements
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        time.sleep(2)  # Allow injected JS to settle after readyState complete
+
+        logger.info("Login page loaded – title: %r, URL: %s",
+                    driver.title, driver.current_url)
 
         # ── Email step ────────────────────────────────────────────────────────
-        # Retry up to 3 times to handle stale element from JS injection
+        # Try multiple selectors: v3 uses #identifierId; v2 uses input[type="email"]
+        _email_selectors = [
+            (By.ID, "identifierId"),
+            (By.CSS_SELECTOR, 'input[type="email"]'),
+            (By.CSS_SELECTOR, 'input[name="identifier"]'),
+        ]
+        email_field = None
         for _retry in range(3):
-            try:
-                email_field = _wait_for(driver, By.CSS_SELECTOR,
-                                        'input[type="email"]')
-                email_field.clear()
-                email_field.send_keys(email)
+            for by, selector in _email_selectors:
+                try:
+                    email_field = WebDriverWait(driver, 20).until(
+                        EC.element_to_be_clickable((by, selector))
+                    )
+                    logger.info("Email field found with selector: %s %r", by, selector)
+                    break
+                except (TimeoutException, NoSuchElementException):
+                    continue
+            if email_field:
                 break
-            except StaleElementReferenceException:
-                logger.warning("Stale element on email field, retrying (%d/3)", _retry + 1)
-                time.sleep(1)
+            try:
+                email_field.clear()
+            except Exception:
+                pass
+            logger.warning("Email field not found on attempt %d/3, retrying…", _retry + 1)
+            time.sleep(1)
         else:
-            raise GoogleAutomationError("Email field stale after 3 retries")
+            # Save screenshot so we can see what Google is actually showing
+            _save_debug_screenshot(driver, "email_field_not_found")
+            logger.error(
+                "Email field not found after 3 attempts. "
+                "Page title: %r | URL: %s | Source snippet: %s",
+                driver.title,
+                driver.current_url,
+                driver.page_source[:500],
+            )
+            raise GoogleAutomationError(
+                "Could not find the Google sign-in email input. "
+                "Google may be showing a bot-detection/challenge page. "
+                "A screenshot was saved to /app/logs/ for inspection.",
+                code="email_field_missing",
+            )
+
+        try:
+            email_field.clear()
+            email_field.send_keys(email)
+        except StaleElementReferenceException:
+            logger.warning("Stale element on email field, retrying send_keys")
+            time.sleep(1)
+            email_field = driver.find_element(By.ID, "identifierId")
+            email_field.clear()
+            email_field.send_keys(email)
 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
@@ -440,7 +501,13 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         return "failed"
 
     except TimeoutException as exc:
-        logger.error("Timeout during login (URL: %s): %s", driver.current_url, exc)
+        # Save screenshot so we can inspect what Google actually showed
+        _save_debug_screenshot(driver, "login_timeout")
+        try:
+            page_info = f"title={driver.title!r} url={driver.current_url} src={driver.page_source[:300]}"
+        except Exception:
+            page_info = "(driver unresponsive)"
+        logger.error("Timeout during login – %s | Exception: %s", page_info, exc)
         return "timeout"
     except WebDriverException as exc:
         logger.error("WebDriver error during login: %s", exc)
