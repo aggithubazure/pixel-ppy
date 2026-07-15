@@ -37,6 +37,7 @@ from google_automation import (
     GoogleAutomationError,
     start_login,
     submit_2fa_code,
+    TOTP_LOCKED,
     check_offer_with_driver,
     close_driver,
 )
@@ -411,6 +412,16 @@ async def check_offer(update: Update,
                                 accepted = await asyncio.to_thread(
                                     submit_2fa_code, driver, code,
                                 )
+                                if accepted == TOTP_LOCKED:
+                                    close_driver(driver)
+                                    driver = None
+                                    await update.message.reply_text(
+                                        "⛔ Google đã tạm khóa xác minh 2FA cho "
+                                        "tài khoản này do quá nhiều lần thử sai.\n"
+                                        "Vui lòng đợi vài giờ rồi thử lại — đây "
+                                        "không phải lỗi nhập sai mã."
+                                    )
+                                    return ConversationHandler.END
                                 if not accepted:
                                     close_driver(driver)
                                     driver = None
@@ -584,6 +595,20 @@ async def handle_2fa_code(update: Update,
                     text=(
                         "❌ Phiên trình duyệt đã gặp sự cố khi đang xác minh mã 2FA.\n"
                         "Đây không phải do nhập sai mã. Vui lòng chạy /check\\_offer lại."
+                    ),
+                )
+                return ConversationHandler.END
+
+            if accepted == TOTP_LOCKED:
+                close_driver(driver)
+                session.pop("_2fa_attempts", None)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⛔ Google đã tạm khóa xác minh 2FA cho tài khoản này "
+                        "do quá nhiều lần thử sai.\n"
+                        "Vui lòng đợi vài giờ rồi thử lại. Đây không phải do "
+                        "bạn nhập sai mã."
                     ),
                 )
                 return ConversationHandler.END

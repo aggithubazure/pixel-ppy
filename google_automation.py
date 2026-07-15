@@ -11,7 +11,7 @@ import os
 import time
 import re
 from urllib.parse import urlparse
-from typing import Optional
+from typing import Optional, Union
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -658,15 +658,49 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         return "failed"
 
 
-def _submit_totp_code(driver: webdriver.Chrome, code: str) -> Optional[bool]:
+# Sentinel returned when Google temporarily blocks the authenticator/TOTP
+# challenge ("Too many failed attempts. Try again in a few hours."). Callers
+# use it to show an accurate message instead of the misleading "wrong code".
+TOTP_LOCKED = "locked"
+
+_LOCKOUT_MARKERS = (
+    "too many failed attempts",
+    "unavailable because of too many",
+    "try again in a few hours",
+)
+
+
+def _page_has_lockout(driver: webdriver.Chrome) -> bool:
+    """Return True if the page shows a 2FA lockout / rate-limit notice."""
+    try:
+        text = driver.find_element(By.TAG_NAME, "body").text.lower()
+    except (NoSuchElementException, StaleElementReferenceException,
+            WebDriverException):
+        return False
+    return any(m in text for m in _LOCKOUT_MARKERS)
+
+
+def _submit_totp_code(driver: webdriver.Chrome, code: str) -> Union[bool, str, None]:
     """Enter a TOTP / authenticator code on the 2FA challenge page.
 
     Returns:
-        True  – code accepted, login completed
-        False – code rejected
-        None  – browser session crashed/disconnected during verification
+        True         – code accepted, login completed
+        False        – code rejected (wrong code)
+        TOTP_LOCKED  – Google temporarily blocked 2FA (too many failed attempts)
+        None         – browser session crashed/disconnected during verification
     """
     try:
+        # If Google has already locked 2FA ("Too many failed attempts. Try
+        # again in a few hours."), do NOT blindly type the code into whatever
+        # input happens to be present (e.g. the phone field on the fallback
+        # screen) — report the lockout so the user gets an accurate message.
+        if _page_has_lockout(driver):
+            logger.warning(
+                "2FA temporarily locked (too many failed attempts) before submit"
+            )
+            _save_debug_screenshot(driver, "totp_locked")
+            return TOTP_LOCKED
+
         # Find the TOTP input field
         totp_field = None
         for selector in (
@@ -742,6 +776,12 @@ def _submit_totp_code(driver: webdriver.Chrome, code: str) -> Optional[bool]:
                 logger.warning("Google reported a wrong TOTP code (url=%s)", current_url)
                 _save_debug_screenshot(driver, "totp_wrong_code")
                 return False
+
+            # 1b) Lockout / rate-limit notice → distinct outcome, not a wrong code
+            if any(m in page_text for m in _LOCKOUT_MARKERS):
+                logger.warning("2FA locked out during verification (url=%s)", current_url)
+                _save_debug_screenshot(driver, "totp_locked")
+                return TOTP_LOCKED
 
             # 2) Left the sign-in challenge entirely → accepted
             if not (hostname == "accounts.google.com" and "challenge" in path):
@@ -1057,10 +1097,12 @@ def start_login(email: str, password: str,
         raise
 
 
-def submit_2fa_code(driver, code: str) -> bool:
+def submit_2fa_code(driver, code: str) -> Union[bool, str, None]:
     """Submit a TOTP code on a driver that is on the 2FA challenge page.
 
-    Returns True if the code was accepted.
+    Returns True if accepted, False if rejected, TOTP_LOCKED if Google
+    temporarily blocked 2FA (too many failed attempts), or None if the
+    browser session crashed.
     """
     return _submit_totp_code(driver, code)
 
