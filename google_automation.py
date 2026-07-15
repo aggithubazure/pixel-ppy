@@ -570,32 +570,32 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
                 guidance = (
                     "Tài khoản của bạn dùng khóa bảo mật phần cứng (passkey) làm 2FA. "
                     "Bot không thể sử dụng khóa phần cứng.\n\n"
-                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
-                    "https://myaccount.google.com/apppasswords "
-                    "và dùng nó thay cho mật khẩu Gmail trong /login."
+                    "✅ Giải pháp: Gỡ passkey khỏi tài khoản tại "
+                    "https://myaccount.google.com/signinoptions/passkeys "
+                    "(rồi bật ứng dụng Authenticator để dùng mã TOTP), "
+                    "hoặc dùng một tài khoản khác."
                 )
             elif "phone" in page_text or "sms" in page_text:
                 challenge_type = "xác minh qua SMS / điện thoại"
                 guidance = (
-                    "Tài khoản của bạn dùng SMS làm 2FA. "
-                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
-                    "https://myaccount.google.com/apppasswords "
-                    "và dùng nó thay cho mật khẩu Gmail trong /login."
+                    "Tài khoản của bạn dùng SMS làm 2FA, bot không nhận được tin nhắn.\n\n"
+                    "✅ Giải pháp: Chuyển 2FA sang ứng dụng Authenticator (mã TOTP) "
+                    "trong cài đặt bảo mật Google, hoặc dùng một tài khoản khác."
                 )
             elif "tap yes" in page_text or "google prompt" in page_text:
                 challenge_type = "Google prompt (nhấn Yes trên điện thoại)"
                 guidance = (
-                    "Tài khoản của bạn dùng 2FA kiểu Google prompt. "
-                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
-                    "https://myaccount.google.com/apppasswords "
-                    "và dùng nó thay cho mật khẩu Gmail trong /login."
+                    "Tài khoản của bạn dùng 2FA kiểu Google prompt, bot không thể "
+                    "nhấn xác nhận trên điện thoại.\n\n"
+                    "✅ Giải pháp: Chuyển 2FA sang ứng dụng Authenticator (mã TOTP), "
+                    "hoặc dùng một tài khoản khác."
                 )
             else:
                 challenge_type = "xác minh 2 bước"
                 guidance = (
-                    "✅ Giải pháp: Tạo Mật khẩu ứng dụng tại "
-                    "https://myaccount.google.com/apppasswords "
-                    "và dùng nó thay cho mật khẩu Gmail trong /login."
+                    "Bot chỉ hỗ trợ 2FA bằng mã Authenticator (TOTP).\n\n"
+                    "✅ Giải pháp: Dùng ứng dụng Authenticator (mã TOTP) cho tài "
+                    "khoản này, hoặc dùng một tài khoản khác."
                 )
 
             logger.warning(
@@ -1061,7 +1061,7 @@ def start_login(email: str, password: str,
         if status == "invalid_credentials":
             driver.quit()
             raise GoogleAutomationError(
-                "Google đã từ chối email/mật khẩu của bạn. Vui lòng kiểm tra lại thông tin đăng nhập hoặc dùng Mật khẩu ứng dụng nếu đã bật 2FA.",
+                "Google đã từ chối email/mật khẩu của bạn. Vui lòng kiểm tra lại thông tin đăng nhập.",
                 code="invalid_credentials",
             )
         if status == "google_challenge":
