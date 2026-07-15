@@ -482,7 +482,19 @@ async def check_offer(update: Update,
                     )
 
     except GoogleAutomationError as exc:
-        await update.message.reply_text(f"❌ <b>Error:</b> {exc}", parse_mode="HTML")
+        error_code = getattr(exc, "code", "automation_error")
+        # Allow immediate retry for runtime/challenge failures.
+        if error_code in {
+            "login_timeout",
+            "webdriver_crashed",
+            "google_challenge",
+            "login_unknown",
+        }:
+            _LAST_CHECK_TIME.pop(chat_id, None)
+        await update.message.reply_text(
+            f"❌ <b>Error ({error_code}):</b> {exc}",
+            parse_mode="HTML",
+        )
         return ConversationHandler.END
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)

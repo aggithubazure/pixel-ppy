@@ -34,6 +34,29 @@ logger = logging.getLogger(__name__)
 
 
 # ── Driver factory ────────────────────────────────────────────────────────────
+def _classify_login_error_message(error_text: str) -> str:
+    """Classify known Google sign-in error messages."""
+    text = (error_text or "").lower()
+    if any(k in text for k in (
+        "wrong password",
+        "couldn’t find your google account",
+        "couldn't find your google account",
+        "enter a valid email",
+        "enter an email or phone number",
+        "incorrect password",
+    )):
+        return "invalid_credentials"
+    if any(k in text for k in (
+        "try again later",
+        "unusual activity",
+        "couldn't sign you in",
+        "this browser or app may not be secure",
+        "verify it’s you",
+        "verify it's you",
+    )):
+        return "google_challenge"
+    return "failed"
+
 
 def _ensure_chromium_installed() -> tuple[str, str]:
     """Find Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path).
@@ -195,9 +218,13 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     Perform Gmail / Google account login.
 
     Returns:
-        "success"    – login completed
-        "failed"     – credentials rejected or error
-        "needs_totp" – TOTP / authenticator code required (driver stays on 2FA page)
+        "success"             – login completed
+        "needs_totp"          – TOTP / authenticator code required
+        "invalid_credentials" – Google rejected email/password
+        "google_challenge"    – blocked/challenge flow incompatible with current run
+        "timeout"             – page interaction timed out
+        "webdriver_crashed"   – browser session disconnected/crashed
+        "failed"              – unclassified login failure
     Raises GoogleAutomationError for unsupported 2FA types.
     """
     try:
@@ -390,7 +417,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
             )
             if error_el.text:
                 logger.warning("Login error detected: %s", error_el.text)
-                return "failed"
+                return _classify_login_error_message(error_el.text)
         except NoSuchElementException:
             pass
 
@@ -407,10 +434,13 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         return "failed"
 
     except TimeoutException as exc:
-        logger.error("Timeout during login: %s", exc)
-        return "failed"
+        logger.error("Timeout during login (URL: %s): %s", driver.current_url, exc)
+        return "timeout"
     except WebDriverException as exc:
         logger.error("WebDriver error during login: %s", exc)
+        msg = str(exc).lower()
+        if any(k in msg for k in ("connection refused", "disconnected", "invalid session id")):
+            return "webdriver_crashed"
         return "failed"
 
 
@@ -687,6 +717,9 @@ def _navigate_google_one(driver: webdriver.Chrome) -> Optional[str]:
 
 class GoogleAutomationError(Exception):
     """Raised when automation encounters an unrecoverable error."""
+    def __init__(self, message: str, code: str = "automation_error"):
+        super().__init__(message)
+        self.code = code
 
 
 def start_login(email: str, password: str,
@@ -697,7 +730,6 @@ def start_login(email: str, password: str,
     Returns (driver, status) where status is:
         "success"    – login completed, ready for offer check
         "needs_totp" – TOTP code needed, driver is on 2FA page
-        "failed"     – login failed
 
     The caller is responsible for calling driver.quit() when done.
     Raises GoogleAutomationError on startup or unsupported 2FA.
@@ -707,10 +739,35 @@ def start_login(email: str, password: str,
 
     try:
         status = _gmail_login(driver, email, password)
+        if status == "invalid_credentials":
+            driver.quit()
+            raise GoogleAutomationError(
+                "Google rejected your email/password. Please re-check credentials or use an App Password if 2FA is enabled.",
+                code="invalid_credentials",
+            )
+        if status == "google_challenge":
+            driver.quit()
+            raise GoogleAutomationError(
+                "Google blocked this automated sign-in (security challenge/risk check). Try confirming the login manually on the same server IP, then run /check_offer again.",
+                code="google_challenge",
+            )
+        if status == "timeout":
+            driver.quit()
+            raise GoogleAutomationError(
+                "Login timed out while waiting for Google sign-in elements. This is usually page/challenge latency rather than wrong credentials.",
+                code="login_timeout",
+            )
+        if status == "webdriver_crashed":
+            driver.quit()
+            raise GoogleAutomationError(
+                "Browser session crashed/disconnected during login (WebDriver connection refused). Check Chromium stability and container limits.",
+                code="webdriver_crashed",
+            )
         if status == "failed":
             driver.quit()
             raise GoogleAutomationError(
-                "Login failed – please check your credentials."
+                "Login failed at an unexpected step (not a clear credential error). Check server logs for the exact Google page state.",
+                code="login_unknown",
             )
         return driver, status
     except GoogleAutomationError:
@@ -744,4 +801,3 @@ def close_driver(driver) -> None:
             driver.quit()
         except Exception:
             pass
-
